@@ -1,0 +1,13 @@
+{
+  "name": "vre",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modular staged reverse-engineering pipeline for VY.exe (uni assignment)",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node cli/vre.mjs run",
+    "lint": "node scripts/lint.mjs",
+    "test": "node --test"
+  }
+}

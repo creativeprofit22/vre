@@ -8,3 +8,5 @@ Thumbs.db
 dist/
 .idea/
 .vscode/
+out/
+*.exe

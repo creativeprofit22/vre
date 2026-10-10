@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      # Static site: no manifest, so no install/build/test commands exist yet.
-      - name: List files
-        run: ls -la
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run lint
+      - run: npm test
