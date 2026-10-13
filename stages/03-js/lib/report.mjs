@@ -71,6 +71,17 @@ export function surfaceSection(s) {
     for (const c of s.senderChecks) L.push(`| ${short(c.file)} | ${c.kind} | \`${esc(c.name)}\` | ${c.count} |`);
   } else L.push('None found.');
 
+  const cov = s.ipcSenderCoverage;
+  if (cov) {
+    L.push('', `#### Per-channel sender checks: ${cov.checked} of ${cov.total} channels checked`, '',
+      'Each `ipcMain` handle/on registration (direct or via a `channel:` wrapper object): checked when its handler compares the sender/frame inline, calls a shared guard that does, or goes through a shared wrapper that does. Static, one call level deep; "no" means no check was seen.', '');
+    if (cov.channels.length) {
+      L.push('| channel | file | registered via | checked | how |', '|---|---|---|---|---|');
+      for (const r of cov.channels) L.push(`| \`${esc(r.channel)}\` | ${short(r.file)} | ${r.method} | ${r.checked ? 'yes' : 'no'} | ${r.via ? esc(r.via) : '-'} |`);
+    } else L.push('No ipcMain channels found.');
+    if (cov.wrappers.length) L.push('', `Shared registration wrappers (non-literal channel): ${cov.wrappers.map((w) => `${short(w.file)} \`ipcMain.${w.method}(${esc(w.raw)})\` ${w.checked ? `checks (${esc(w.via ?? '')})` : 'no check'}`).join('; ')}.`);
+  }
+
   const na = s.nativeAddons;
   L.push('', `### Native addons (${na.files.length} .node file(s))`, '', 'Shipped `.node` binaries, the package that loads them, and the first-party bundles importing that package. Analysed as binaries in stage 04-native.', '');
   if (na.files.length) {

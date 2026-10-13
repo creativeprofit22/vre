@@ -85,3 +85,30 @@ test('native addons link prebuilt packages to importing bundles; report renders 
   assert.match(md, /\| GET \| `\/health` \| router \| main\.cjs \|/);
   assert.match(md, /no direct first-party import/);
 });
+
+test('channelSenderChecks reports per-channel coverage through inline checks, shared guards, named handlers and wrappers', () => {
+  const code = `
+const CH_A = "app:a";
+const CH_B = "app:b";
+const CH_C = "app:c";
+const CH_D = "app:d";
+const CH_E = "app:e";
+const ensureMainSender = (event) => { if (event.sender.id !== main.webContents.id) throw new Error("x"); };
+const onMsg = (event) => { if (event.senderFrame !== win.webContents.mainFrame) return; };
+ipcMain.handle(CH_A, (event) => { ensureMainSender(event); return 1; });
+ipcMain.on(CH_B, onMsg);
+ipcMain.on(CH_C, (event, x) => log(x));
+ipcMain.handle(channel, (event, raw) => run(raw));
+const methods = [makeIpcMethod({ channel: CH_D, handler: (input, event) => ensureMainSender(event) }), makeIpcMethod({ channel: CH_E, handler: (input) => input })];`;
+  const acc = createMapAcc();
+  addScan(acc, 'app/main.cjs', scanFile(code));
+  const cov = finalizeMap(acc).surface.ipcSenderCoverage;
+  const by = Object.fromEntries(cov.channels.map((r) => [r.channel, r.via]));
+  assert.deepEqual(by, { 'app:a': 'helper ensureMainSender', 'app:b': 'handler onMsg', 'app:c': null, 'app:d': 'helper ensureMainSender', 'app:e': null });
+  assert.equal(cov.checked, 3);
+  assert.equal(cov.total, 5);
+  assert.deepEqual(cov.wrappers.map((w) => [w.raw, w.checked]), [['channel', false]]);
+  const md = surfaceSection(finalizeMap(acc).surface).join('\n');
+  assert.match(md, /3 of 5 channels checked/);
+  assert.match(md, /\| `app:c` \| main\.cjs \| on \| no \| - \|/);
+});

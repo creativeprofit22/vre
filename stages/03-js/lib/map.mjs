@@ -3,7 +3,7 @@
 // Electron surface, network, env, debug ids). Regex-based best effort.
 
 import { normalizeRegionPath } from './regions.mjs';
-import { addonBasePackage, addonLoads, bridgeMembers, scanRoutes, scanRpc, senderChecks } from './surface.mjs';
+import { addonBasePackage, addonLoads, bridgeMembers, channelSenderChecks, scanRoutes, scanRpc, senderChecks } from './surface.mjs';
 
 /**
  * name@version from a region path inside node_modules (pnpm layout preferred).
@@ -203,6 +203,26 @@ export function scanFile(code, raw = code) {
   return {
     calls, schemes, flags, urls: [...urls].sort(), env: [...env].sort(), debugIds, sourceMaps,
     routes: scanRoutes(code), rpc: scanRpc(code), bridges: bridgeMembers(code, consts), senders: senderChecks(code), addons: addonLoads(code),
+    ipcSenders: /\bipcMain\b/.test(code) ? channelSenderChecks(code, (i) => readArg(code, i, consts).value, consts) : { channels: [], wrappers: [] },
+  };
+}
+
+/**
+ * Per-channel coverage: a channel counts as checked only when every registration of it is.
+ * @param {ReturnType<typeof createMapAcc>} acc
+ * @param {(arr: any[], keys: string[]) => any[]} sortBy
+ */
+function senderCoverage(acc, sortBy) {
+  const seen = new Set();
+  const rows = sortBy(acc.ipcSenderChannels.filter((r) => { const k = `${r.file}|${r.channel}|${r.method}|${r.via}`; if (seen.has(k)) return false; seen.add(k); return true; }), ['channel', 'file', 'method']);
+  /** @type {Map<string, boolean>} */
+  const per = new Map();
+  for (const r of rows) per.set(r.channel, (per.get(r.channel) ?? true) && r.checked);
+  return {
+    total: per.size,
+    checked: [...per.values()].filter(Boolean).length,
+    channels: rows,
+    wrappers: sortBy(acc.ipcSenderWrappers, ['file', 'method', 'raw']),
   };
 }
 
@@ -237,6 +257,10 @@ export function createMapAcc() {
     bridges: [],
     /** @type {{ file: string, kind: string, name: string, count: number }[]} */
     senders: [],
+    /** @type {{ file: string, channel: string, method: string, checked: boolean, via: string|null }[]} */
+    ipcSenderChannels: [],
+    /** @type {{ file: string, raw: string, method: string, checked: boolean, via: string|null }[]} */
+    ipcSenderWrappers: [],
     /** @type {{ file: string, requires: string[], dlopen: number }[]} */
     addonLoads: [],
     /** @type {{ archive: string, path: string, package: string|null, bytes: number }[]} */
@@ -299,6 +323,8 @@ export function addScan(acc, file, s, fileKind = 'other') {
   for (const mth of s.rpc?.jsonRpc ?? []) { if (!acc.jsonRpc.has(mth)) acc.jsonRpc.set(mth, new Set()); acc.jsonRpc.get(mth)?.add(file); }
   for (const b of s.bridges ?? []) acc.bridges.push({ file, ...b });
   for (const c of s.senders ?? []) acc.senders.push({ file, ...c });
+  for (const c of s.ipcSenders?.channels ?? []) acc.ipcSenderChannels.push({ file, ...c });
+  for (const w of s.ipcSenders?.wrappers ?? []) acc.ipcSenderWrappers.push({ file, ...w });
   if (s.addons && (s.addons.requires.length || s.addons.dlopen)) acc.addonLoads.push({ file, ...s.addons });
 }
 
@@ -381,6 +407,7 @@ export function finalizeMap(acc) {
       jsonRpc,
       bridges,
       senderChecks: sortBy(acc.senders, ['file', 'kind', 'name']),
+      ipcSenderCoverage: senderCoverage(acc, sortBy),
       nativeAddons: { files: addons, loads: sortBy(acc.addonLoads, ['file']) },
     },
     electron: {

@@ -225,6 +225,103 @@ export function senderChecks(code) {
   return [...m.values()].sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : 1));
 }
 
+const CHECK_PATTERNS = /** @type {[string, RegExp][]} */ ([
+  ['senderFrame comparison', /\bsenderFrame\s*[!=]==?|[!=]==?\s*[\w$.]*\bsenderFrame\b(?!\??\.)/],
+  ['sender.id comparison', /\bsender\.id\s*[!=]==?|[!=]==?\s*[\w$.]*\bsender\.id\b/],
+  ['sender comparison', /\bsender\s*[!=]==?|[!=]==?\s*[\w$.]*\bsender\b(?!\??\.)/],
+  ['senderFrame.url', /\bsenderFrame\??\.(?:url|origin)\b/],
+  ['sender.getURL()', /\bsender\??\.getURL\(\)/],
+  ['helper', /\b((?:ensure|assert|validate|verify|is|check)[A-Z][\w$]*Sender[\w$]*)\s*\(/],
+]);
+
+/** First sender-check kind found in `text`, or null. @param {string} text */
+export function inlineSenderCheck(text) {
+  for (const [kind, re] of CHECK_PATTERNS) { const m = re.exec(text); if (m) return kind === 'helper' ? `helper ${m[1]}` : kind; }
+  return null;
+}
+
+/**
+ * Named functions/properties whose body performs a sender check (shared guards such as
+ * `ensureTrustedSender` or a service method `control: (input, event) => ...`).
+ * Found by walking back from each check site to the nearest enclosing named definition.
+ * @param {string} code
+ * @returns {Set<string>}
+ */
+export function senderCheckers(code) {
+  const names = new Set();
+  const any = new RegExp(CHECK_PATTERNS.map(([, re]) => re.source).join('|'), 'g');
+  const HEAD = /\bfunction\s*\*?\s*([\w$]+)\s*\(|\b(?:const|let|var)\s+([\w$]+)\s*=|(?:^|[,{\s])([\w$]+)\s*(?::\s*(?:async\s*)?(?:function\s*\*?\s*)?\(|\([^()]*\)\s*\{)/g;
+  for (const m of code.matchAll(any)) {
+    const site = m.index ?? 0;
+    const from = Math.max(0, site - 4000);
+    const window = code.slice(from, site);
+    const heads = [...window.matchAll(HEAD)].reverse();
+    for (const h of heads) {
+      const name = h[1] ?? h[2] ?? h[3];
+      if (!name || /^(?:if|for|while|switch|catch|return|function)$/.test(name)) continue;
+      const brace = code.indexOf('{', from + (h.index ?? 0) + h[0].length - 1);
+      if (brace < 0 || brace > site || brace - (from + (h.index ?? 0)) > 300) continue;
+      if (skipBalanced(code, brace) > site) { names.add(name); break; }
+    }
+  }
+  return names;
+}
+
+/**
+ * Per-channel sender-check coverage for `ipcMain` registrations. A registration counts as checked
+ * when its handler text checks the sender inline, calls a shared guard from `senderCheckers`,
+ * or is registered through a shared wrapper (`ipcMain.handle(channel, ...)` with a non-literal
+ * channel) that itself checks. Static and one level deep: unchecked means "no check seen".
+ * @param {string} code
+ * @param {(idx: number) => string|null} resolve channel for the argument starting at `idx`
+ * @param {Map<string,string>} consts
+ * @returns {{ channels: { channel: string, method: string, checked: boolean, via: string|null }[], wrappers: { raw: string, method: string, checked: boolean, via: string|null }[] }}
+ */
+export function channelSenderChecks(code, resolve, consts) {
+  const guards = senderCheckers(code);
+  const guardRe = guards.size ? new RegExp(`(?:\\b|\\.)(${[...guards].map((g) => g.replace(/\$/g, '\\$')).join('|')})\\s*\\(`) : null;
+  /** @param {string} text */
+  const how = (text) => {
+    const inline = inlineSenderCheck(text);
+    if (inline) return inline;
+    const g = guardRe?.exec(text);
+    return g ? `guard ${g[1]}` : null;
+  };
+  const channels = [];
+  const wrappers = [];
+  for (const m of code.matchAll(/\bipcMain\.(handle|handleOnce|on|once)\s*\(/g)) {
+    const open = (m.index ?? 0) + m[0].length - 1;
+    const body = code.slice(open, skipBalanced(code, open));
+    const channel = resolve(open + 1);
+    // handler passed by name (`ipcMain.on(CH, onMessage)`): checked when that function is a checker
+    const named = /^\(\s*[^,]+,\s*([A-Za-z_$][\w$]*)\s*\)$/.exec(body)?.[1];
+    const via = how(body) ?? (named && guards.has(named) ? `handler ${named}` : null);
+    if (channel) channels.push({ channel, method: m[1], checked: !!via, via });
+    else wrappers.push({ raw: /^\(\s*([^,)]{0,60})/.exec(body)?.[1]?.trim() ?? '?', method: m[1], checked: !!via, via });
+  }
+  if (/\bipcMain\b/.test(code)) {
+    // wrapper-registered channels inherit a check only if every shared wrapper checks
+    const wrapperVia = wrappers.length && wrappers.every((w) => w.checked) ? wrappers[0].via : null;
+    for (const m of code.matchAll(/\bchannel\s*:\s*([A-Za-z_$][\w$]*)\b/g)) {
+      const channel = consts.get(m[1]);
+      if (!channel) continue;
+      // enclosing object literal of the `channel:` property
+      let i = (m.index ?? 0) - 1;
+      let depth = 0;
+      for (; i >= 0; i--) {
+        const c = code[i];
+        if (c === '}' || c === ')' || c === ']') depth++;
+        else if (c === '(' || c === '[') { if (depth) depth--; }
+        else if (c === '{') { if (depth) depth--; else break; }
+      }
+      const body = i >= 0 ? code.slice(i, skipBalanced(code, i)) : '';
+      const via = how(body) ?? (wrapperVia ? `wrapper ${wrapperVia}` : null);
+      channels.push({ channel, method: 'wrapper', checked: !!via, via });
+    }
+  }
+  return { channels, wrappers };
+}
+
 /**
  * Native-addon loads in first-party code: `require("x.node")` and `process.dlopen`.
  * @param {string} code
