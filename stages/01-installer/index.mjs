@@ -4,11 +4,12 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
+import { decodeNsisHeader, readNsisHeader } from './lib/nsis-script.mjs';
 
 const LIMITS = [
   'Requires an external 7-Zip binary (7z/7za/7zz on PATH, or VRE_7Z); version recorded in notes.',
   'Only NSIS installers are supported (electron-builder layout with $PLUGINSDIR/app-<arch>.7z).',
-  'NSIS install script logic (registry writes, shortcuts, custom pages) is not decompiled; only the payload is extracted.',
+  'NSIS script is decoded from the header (installer-script.json/.nsi), but user variables stay unnamed ($_N_), custom page UI is not rendered, and only deflate/stored NSIS 3 Unicode headers are supported (no LZMA/bzip2/solid).',
 ];
 
 const SEVEN_ZIP_CANDIDATES = ['7z', '7za', '7zz'];
@@ -94,6 +95,20 @@ export default {
     log(`01-installer: extracting ${payload}`);
     run7z(tool.cmd, ['x', join(plugins, payload), `-o${appDir}`, '-y']);
 
+    // Decode the NSIS script of the installer and of the bundled uninstaller.
+    const scripts = {};
+    const uninst = (await readdir(join(nsisDir, '$R0')).catch(() => [])).find((f) => /\.exe$/i.test(f));
+    for (const [label, buf] of [['installer', head], ['uninstaller', uninst ? await readFile(join(nsisDir, '$R0', uninst)) : null]]) {
+      if (!buf) continue;
+      try {
+        const h = readNsisHeader(buf);
+        scripts[label] = { compression: h.compression, ...decodeNsisHeader(h.header) };
+      } catch (e) { scripts[label] = { error: String(e.message ?? e) }; }
+    }
+    await writeFile(join(outDir, 'installer-script.json'), JSON.stringify(Object.fromEntries(Object.entries(scripts).map(([k, v]) => [k, { ...v, script: undefined }])), null, 2) + '\n');
+    await writeFile(join(outDir, 'installer-script.nsi'), Object.entries(scripts)
+      .map(([k, v]) => `; ===== ${k} (decoded from NSIS header; pseudo-NSIS, @N = instruction index) =====\n${v.script ?? `; not decoded: ${v.error}\n`}`).join('\n'));
+
     // File inventory with hashes (the manifest only lists key artifacts).
     const files = [];
     for (const p of [...await walk(nsisDir), ...await walk(appDir)]) {
@@ -113,6 +128,11 @@ export default {
     ];
     const upd = await readFile(join(appDir, 'resources', 'app-update.yml'), 'utf8').catch(() => null);
     if (upd) notes.push(`app-update.yml: ${upd.trim().replace(/\r?\n/g, '; ')}`);
-    return { status: 'ok', inputs: [input], outputs: ['files.json', ...key], notes, limits: LIMITS };
+    for (const [k, v] of Object.entries(scripts)) {
+      if (v.error) { notes.push(`${k} script: not decoded (${v.error})`); continue; }
+      const e = v.effects;
+      notes.push(`${k} script: ${v.meta.instructions} instructions, ${v.functions.length} functions; registry ${e.registry.length}, shortcuts ${e.shortcuts.length}, files ${e.files.length}, exec ${e.exec.length}, plugin calls ${e.plugins.length}, URL protocols ${e.protocols.length}`);
+    }
+    return { status: 'ok', inputs: [input], outputs: ['files.json', 'installer-script.json', 'installer-script.nsi', ...key], notes, limits: LIMITS };
   },
 };
