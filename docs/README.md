@@ -1,10 +1,10 @@
 # Architecture
 
 ```
-VY.exe -> [01-installer] -> out/01-installer/ -> [02-asar] -> out/02-asar/ -> [03-js] -> out/03-js/ -> [04-native] -> out/04-native/ -> [05-report] -> out/05-report/
+VY.exe -> [01-installer] -> out/01-installer/ -> [02-asar] -> out/02-asar/ -> [03-js] -> out/03-js/ -> [04-native] -> out/04-native/ -> [05-report] -> out/05-report/ -> [06-mod] -> out/06-mod/
                  \_______________________ out/manifest.json (one entry per stage) _______________________/
 ```
-`04-native` analyses binaries from `out/01-installer/` and `out/02-asar/`, which it reads as sibling output folders (not via imports). `05-report` reads the outputs of 01-04 the same way and writes the summary.
+`04-native` analyses binaries from `out/01-installer/` and `out/02-asar/`, which it reads as sibling output folders (not via imports). `05-report` reads the outputs of 01-04 the same way and writes the summary. `06-mod` reads the installed Voyager (or `out/01-installer/app` as a fallback) plus the repo's `mods/` folder and writes a runnable modded copy to `out/06-mod/`; it never writes to the installed app.
 
 ## Rules
 - Stages communicate only through output folders and manifest entries.
@@ -38,3 +38,5 @@ Re-running a stage replaces its entry.
 1. Create `stages/NN-name/index.mjs` (default export per `core/stage.mjs`) and a `README.md` (inputs, outputs, limits).
 2. Add the name to `STAGES` in `cli/registry.mjs`.
 3. Run `npm run lint && npm test`.
+
+Modding status, with evidence for each mod surface and known limits: [MODDING-STATUS.md](MODDING-STATUS.md).

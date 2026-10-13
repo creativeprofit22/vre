@@ -4,10 +4,14 @@
   "private": true,
   "description": "Modular staged reverse-engineering pipeline for VY.exe (uni assignment)",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node cli/vre.mjs run",
     "lint": "node scripts/lint.mjs",
-    "test": "node --test \"test/**/*.test.mjs\""
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "mod": "node cli/vre.mjs mod rebuild",
+    "mod:launch": "node cli/vre.mjs mod launch"
   }
 }

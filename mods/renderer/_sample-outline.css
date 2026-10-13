@@ -1,0 +1,3 @@
+/* sample: hot-swapped without a reload */
+:root { --vre-hot: 1; }
+body { outline: 3px solid rgb(0, 200, 255) !important; outline-offset: -3px; }

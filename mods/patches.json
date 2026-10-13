@@ -1,0 +1,44 @@
+[
+  {
+    "id": "disable-auto-update",
+    "file": "apps/desktop/dist-electron/main.cjs",
+    "find": "function getAutoUpdateDisabledReason(args) {",
+    "replace": "function getAutoUpdateDisabledReason(args) {\n\treturn \"Automatic updates are disabled in this vre modded copy.\";",
+    "expect": 1
+  },
+  {
+    "id": "no-auth-skip-onboarding",
+    "archive": "server",
+    "file": "apps/server/dist/client/assets/main-*.js",
+    "regex": true,
+    "find": "function ([\\w$]+)\\(e\\)\\{return!e\\.enabled\\|\\|e\\.hydrated&&e\\.completed\\?\\{decision:`app`",
+    "replace": "function $1(e){return{decision:`app`,persistCompletion:!0};return!e.enabled||e.hydrated&&e.completed?{decision:`app`",
+    "expect": 1
+  },
+  {
+    "id": "no-auth-hide-sidebar-sign-in",
+    "archive": "server",
+    "file": "apps/server/dist/client/assets/main-*.js",
+    "regex": true,
+    "find": "([\\w$]+)=\\(0,([\\w$]+)\\.lazy\\)\\(\\(\\)=>([\\w$]+)\\(\\(\\)=>import\\(`(\\./VoyagerConnectSidebarSignIn-[\\w-]+\\.js)`\\)\\.then\\(e=>\\(\\{default:e\\.VoyagerConnectSidebarSignIn\\}\\)\\)",
+    "replace": "$1=(0,$2.lazy)(()=>Promise.resolve({default:()=>null})),vreUnusedSignIn=(0,$2.lazy)(()=>$3(()=>import(`$4`).then(e=>({default:e.VoyagerConnectSidebarSignIn}))",
+    "expect": 1
+  },
+  {
+    "id": "no-auth-hide-sidebar-avatar",
+    "archive": "server",
+    "file": "apps/server/dist/client/assets/main-*.js",
+    "regex": true,
+    "find": "([\\w$]+)=\\(0,([\\w$]+)\\.lazy\\)\\(\\(\\)=>([\\w$]+)\\(\\(\\)=>import\\(`(\\./VoyagerConnectSidebarSignIn-[\\w-]+\\.js)`\\)\\.then\\(e=>\\(\\{default:e\\.VoyagerConnectSidebarAvatar\\}\\)\\)",
+    "replace": "$1=(0,$2.lazy)(()=>Promise.resolve({default:()=>null})),vreUnusedAvatar=(0,$2.lazy)(()=>$3(()=>import(`$4`).then(e=>({default:e.VoyagerConnectSidebarAvatar}))",
+    "expect": 1
+  },
+  {
+    "id": "no-auth-moda-identity",
+    "archive": "server",
+    "file": "apps/server/dist/moda-account-*.mjs",
+    "find": "\tasync identity() {\n\t\tconst value = await optionalJSON(this.file, null);",
+    "replace": "\tasync identity() {\n\t\tif (!globalThis.__vreNoAuth) {\n\t\t\tglobalThis.__vreNoAuth = true;\n\t\t\ttry { process.getBuiltinModule(\"node:fs\").appendFileSync(join(this.home, \"vre-mods.log\"), `[vre ${new Date().toISOString()}] server.asar patch no-auth-moda-identity active in server pid=${process.pid}: Voyager account sign-in is off\\n`); } catch {}\n\t\t}\n\t\treturn void 0;\n\t\tconst value = await optionalJSON(this.file, null);",
+    "expect": 1
+  }
+]

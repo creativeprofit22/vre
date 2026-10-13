@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { mkdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { access, mkdir } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { addEntry, hashFile, readManifest } from '../core/manifest.mjs';
@@ -9,7 +10,9 @@ import { STAGES, loadStage } from './registry.mjs';
 
 const USAGE = `usage:
   vre run [--input VY.exe] [--out out]
-  vre stage <${STAGES.join('|')}> [--input VY.exe] [--out out]`;
+  vre stage <${STAGES.join('|')}> [--input VY.exe] [--out out]
+  vre mod rebuild [--out out]   recreate the modded Voyager copy from the installed app (alias: restore)
+  vre mod launch [--out out]    start the modded copy`;
 
 export async function runStage(name, { input = null, out = 'out', log = console.log, load = loadStage } = {}) {
   const stage = assertStage(await load(name), name);
@@ -47,6 +50,17 @@ export async function runAll(opts) {
   return entries;
 }
 
+/** Start the modded copy built by 06-mod; returns the child process (detached). */
+export async function launchMod({ out = 'out', log = console.log, spawnFn = spawn } = {}) {
+  const dir = join(resolve(out), '06-mod');
+  const exe = join(dir, 'Voyager', 'Voyager.exe');
+  await access(exe).catch(() => { throw new Error(`no modded copy at ${exe}; run: node cli/vre.mjs mod rebuild`); });
+  const child = spawnFn(exe, [], { cwd: dirname(exe), detached: true, stdio: 'ignore' });
+  child.unref?.();
+  log(`launched ${exe} (pid ${child.pid}); loader log: ${join(dir, 'home', 'vre-mods.log')}`);
+  return child;
+}
+
 export async function main(argv) {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -57,6 +71,8 @@ export async function main(argv) {
   const opts = { input: values.input ?? process.env.VRE_INPUT ?? null, out: values.out };
   if (cmd === 'run' && !name) await runAll(opts);
   else if (cmd === 'stage' && name) await runStage(name, opts);
+  else if (cmd === 'mod' && (name === 'rebuild' || name === 'restore')) await runStage('06-mod', opts);
+  else if (cmd === 'mod' && name === 'launch') await launchMod(opts);
   else {
     console.error(USAGE);
     return 2;
