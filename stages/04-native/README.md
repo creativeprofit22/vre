@@ -15,8 +15,12 @@ For every PE file (`MZ` + `PE\0\0`), deduplicated by SHA-256 (identical copies a
 - interesting strings (ASCII and UTF-16LE): URLs, named pipes, registry keys, paths, env vars, shell commands, toolchain markers (Rust/Go/PyInstaller/...)
 Also summarises `resources/engines/engines-manifest.json` and the tools under `resources/voyager/native/`.
 
+Embedded payloads (`lib/embedded.mjs`):
+- Bun standalone executables (`bun build --compile`): the module graph in the `.bun` section (or overlay) is parsed from its trailer (`---- Bun! ----`, 32-byte offsets struct, fixed-size module records) and every embedded file is written to `out/04-native/embedded/<binary>-<sha8>/` (entry point, baked-in exec argv and user agent are recorded).
+- Rust build provenance from panic/debug strings: crates.io dependencies with versions, git dependencies, first-party workspace crates and their source files, CI checkout repo, rustc commit.
+
 ## Outputs
-`out/04-native/index.json` (one record per unique binary) and `REPORT.md` (overview, first-party binaries in detail, bundled tools table, limits).
+`out/04-native/index.json` (one record per unique binary, with `bun` and `rust` fields where found), `REPORT.md` (overview, first-party binaries in detail, embedded payloads, bundled tools table, limits) and `embedded/` (files extracted from Bun standalone apps; not listed in the manifest).
 
 ## Limits
 - Static only: no disassembly, decompilation or execution.
@@ -24,5 +28,7 @@ Also summarises `resources/engines/engines-manifest.json` and the tools under `r
 - `Voyager.exe` is the Electron/Chromium host, so its imports and strings describe Chromium; Voyager's own logic is in the JavaScript (stage 03-js).
 - Capabilities come from import tables; APIs resolved at runtime (`GetProcAddress`, napi-rs modules) are invisible.
 - Strings are capped per category and file.
+- Bun graphs are parsed from the Bun 1.1-1.3 layout; extracted JS is as shipped (minified), and bytecode is not decompiled.
+- Rust provenance lists what was compiled in (paths left in strings), not what runs; code without panic paths is invisible.
 
 Boundary: this stage does not import other stages or `cli/`.

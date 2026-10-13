@@ -57,6 +57,8 @@ export function buildReport(index, limits) {
     L.push('');
   }
 
+  L.push(...embeddedSection(bins));
+
   L.push('## Bundled tools and runtime', '');
   const eng = index.engines?.manifest?.engines;
   if (eng) {
@@ -80,3 +82,45 @@ export function buildReport(index, limits) {
 }
 
 function basenameOf(p) { return p.split('/').pop(); }
+
+const kind = (p) => (/\.(m|c)?js$/.test(p) ? 'js' : (p.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'other').toLowerCase());
+
+/** Report lines for Bun standalone apps and Rust build provenance. */
+export function embeddedSection(bins) {
+  const L = ['## Embedded payloads', ''];
+  const bun = bins.filter((r) => r.bun);
+  L.push(`### Bun standalone executables (${bun.length})`, '');
+  if (!bun.length) L.push('None found.', '');
+  for (const r of bun) {
+    const b = r.bun;
+    /** @type {Record<string, {n: number, bytes: number}>} */
+    const byKind = {};
+    for (const m of b.modules) { const k = kind(m.path); byKind[k] ??= { n: 0, bytes: 0 }; byKind[k].n++; byKind[k].bytes += m.size; }
+    L.push(`**${esc(basenameOf(r.path))}**: ${b.modules.length} embedded files (${mb(b.bytes)}), entry point \`${esc(b.entryPoint ?? '?')}\`${b.userAgent ? `, identifies as \`${esc(b.userAgent)}\`` : ''}.`, '');
+    L.push(`- Exec argv baked in: \`${esc(b.execArgv || '(none)')}\``);
+    L.push(`- By type: ${Object.entries(byKind).sort((x, y) => y[1].bytes - x[1].bytes).map(([k, v]) => `${k} ${v.n} (${mb(v.bytes)})`).join(', ')}`);
+    L.push(`- Bytecode: ${b.modules.some((m) => m.bytecodeBytes) ? 'present' : 'none'}; source maps: ${b.modules.some((m) => m.sourcemapBytes) ? 'present' : 'none'}`);
+    L.push(`- Extracted to \`out/04-native/${esc(b.extractedTo)}/\``);
+    const named = b.modules.filter((m) => !/^chunk-[a-z0-9]+\.js$/.test(m.path)).sort((x, y) => y.size - x.size);
+    if (named.length) L.push(`- Named (non-chunk) files: ${named.slice(0, 30).map((m) => `\`${esc(m.path)}\` (${mb(m.size)})`).join(', ')}${named.length > 30 ? ', ...' : ''}`);
+    L.push('');
+  }
+  const rust = bins.filter((r) => r.rust && (r.rust.crates.length || r.rust.sourceCount)).sort((a, b) => b.rust.sourceCount - a.rust.sourceCount || b.rust.crates.length - a.rust.crates.length);
+  L.push(`### Rust build provenance (${rust.length} binaries)`, '', 'From build paths left in panic/debug strings: CI checkout, first-party crates (workspace-relative source files) and crates.io / git dependencies.', '');
+  if (rust.length) {
+    L.push('| binary | CI repo | first-party sources | first-party crates | deps (crates.io / git) | rustc |', '|---|---|---|---|---|---|');
+    for (const r of rust) {
+      const x = r.rust;
+      const roots = x.sourceRoots.slice(0, 12).map((s) => `${s.root.replace(/^crates\//, '')} (${s.files})`).join(', ');
+      L.push(`| ${esc(basenameOf(r.path))} | ${x.ciRepos.join(', ') || '-'} | ${x.sourceCount} | ${esc(roots) || '-'}${x.sourceRoots.length > 12 ? ', ...' : ''} | ${x.crates.length} / ${x.git.length ? x.git.map((g) => `${g.name}@${g.revs.join(',')}`).join(', ') : '0'} | ${x.rustc.map((c) => c.slice(0, 12)).join(', ') || '-'} |`);
+    }
+    L.push('');
+    const NOTABLE = /^(tokio|axum|hyper|reqwest|tonic|serde_json|whisper-rs|ort|candle-core|wgpu|cpal|symphonia|rubato|ffmpeg-next|ffmpeg-sys-next|cranelift-codegen|wasmtime|rusqlite|sqlx|windows|tauri|napi|uniffi|keyring|portable-pty|rustls|openssl|ring|image|lofty|realfft|rustfft|midly|vst3|clap-sys|tree-sitter|notify)$/;
+    for (const r of rust) {
+      const notable = r.rust.crates.filter((c) => NOTABLE.test(c.name));
+      if (notable.length) L.push(`- ${esc(basenameOf(r.path))} notable deps: ${notable.map((c) => `${c.name} ${c.versions.join('/')}`).join(', ')}`);
+    }
+    L.push('');
+  } else L.push('None found.', '');
+  return L;
+}
