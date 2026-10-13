@@ -6,6 +6,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { capabilities, certNames, entropyFromCounts, isPE, PACKED_ENTROPY, parsePE, StringScanner, toolchains } from './lib/pe.mjs';
 import { BUN_TRAILER, parseBunGraph, rustSources, safeModulePath } from './lib/embedded.mjs';
+import { beautify, guessModule } from './lib/beautify.mjs';
 import { buildReport } from './lib/report.mjs';
 
 const LIMITS = [
@@ -158,7 +159,7 @@ export default {
     // Embedded payloads: Bun standalone graphs (extracted) and Rust build provenance
     const embDir = join(outDir, 'embedded');
     await rm(embDir, { recursive: true, force: true });
-    let bunApps = 0, bunFiles = 0, rustBins = 0;
+    let bunApps = 0, bunFiles = 0, rustBins = 0, prettyOk = 0, prettyFail = 0;
     for (const r of records) {
       if (r.error) continue;
       const abs = join(outRoot, ...r.path.split('/'));
@@ -169,14 +170,35 @@ export default {
         if (g) {
           const dest = join(embDir, `${basename(r.path).replace(/\.[^.]+$/, '')}-${r.sha256.slice(0, 8)}`);
           let written = 0;
+          /** @type {{ path: string, size: number, prettyLines?: number, lines?: number, pretty?: string, error?: string, guess: string }[]} */
+          const pIndex = [];
           for (const m of g.modules) {
             const rel = safeModulePath(m.path.replace(/^(\.\.\/)+/, '_up/'));
             if (!rel) continue;
             const out = join(dest, ...rel.split('/'));
             await mkdir(dirname(out), { recursive: true });
-            await writeFile(out, buf.subarray(m.offset, m.offset + m.size));
+            const body = buf.subarray(m.offset, m.offset + m.size);
+            await writeFile(out, body);
             written++;
+            const isJs = /\.(m?js|cjs)$/i.test(rel);
+            const text = isJs ? body.toString('utf8') : undefined;
+            /** @type {typeof pIndex[number]} */
+            const entry = { path: rel, size: m.size, guess: guessModule(rel, text) };
+            if (text != null) {
+              const b = beautify(text);
+              const pOut = join(dest, 'pretty', ...rel.split('/'));
+              await mkdir(dirname(pOut), { recursive: true });
+              await writeFile(pOut, b.code);
+              Object.assign(entry, { pretty: `pretty/${rel}`, lines: text.split('\n').length, prettyLines: b.code.split('\n').length - 1 }, b.ok ? {} : { error: `copied as-is: ${b.error}` });
+              if (b.ok) prettyOk++; else prettyFail++;
+            }
+            pIndex.push(entry);
           }
+          pIndex.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+          await mkdir(join(dest, 'pretty'), { recursive: true });
+          await writeFile(join(dest, 'pretty', 'index.json'), JSON.stringify(pIndex, null, 2) + '\n');
+          await writeFile(join(dest, 'pretty', 'INDEX.md'), ['# Embedded modules', '', '| file | bytes | lines (orig -> pretty) | guess |', '|---|---:|---|---|',
+            ...pIndex.map((e) => `| ${e.pretty ? `[${e.path}](${encodeURI(e.path)})` : e.path} | ${e.size} | ${e.lines != null ? `${e.lines} -> ${e.prettyLines}${e.error ? ' (fallback)' : ''}` : ''} | ${e.guess.replace(/\|/g, '\\|')} |`), ''].join('\n'));
           const ua = /--user-agent=(\S+)/.exec(g.execArgv)?.[1] ?? null;
           r.bun = { entryPoint: g.entryPoint, execArgv: g.execArgv, userAgent: ua, recordSize: g.recordSize, bytes: g.byteCount,
             extractedTo: posix(relative(outDir, dest)), modules: g.modules.map((m) => ({ path: m.path, size: m.size, sourcemapBytes: m.sourcemapBytes, bytecodeBytes: m.bytecodeBytes })) };
@@ -197,6 +219,7 @@ export default {
     const signed = records.filter((r) => r.signature).length;
     notes.push(
       `embedded: ${bunApps} Bun standalone app(s) (${bunFiles} modules extracted to embedded/), Rust provenance for ${rustBins} binaries`,
+      `embedded JS beautified: ${prettyOk} re-indented, ${prettyFail} copied as-is (pretty/ next to each extracted app, with pretty/index.json and INDEX.md guessing what each module is)`,
       `${scanned} PE files (${records.length} unique by sha256, ${scanned - records.length} duplicate copies), ${skipped} non-PE files skipped`,
       `${signed} unique binaries carry an Authenticode signature (not verified), ${records.filter((r) => r.packedSections?.length).length} have high-entropy executable sections`,
     );

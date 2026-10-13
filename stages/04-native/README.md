@@ -17,6 +17,7 @@ Also summarises `resources/engines/engines-manifest.json` and the tools under `r
 
 Embedded payloads (`lib/embedded.mjs`):
 - Bun standalone executables (`bun build --compile`): the module graph in the `.bun` section (or overlay) is parsed from its trailer (`---- Bun! ----`, 32-byte offsets struct, fixed-size module records) and every embedded file is written to `out/04-native/embedded/<binary>-<sha8>/` (entry point, baked-in exec argv and user agent are recorded).
+- Readable copies (`lib/beautify.mjs`, zero-dep): every extracted `.js` is re-indented into `embedded/<app>/pretty/<same path>` by a string/regex/template/comment-aware tokenizer (newline after `;` `{` `}` outside `(...)`, indent by brace depth; only whitespace is inserted, checked by comparing non-whitespace content). On anything it cannot balance the original is copied as-is and the reason recorded. `pretty/index.json` and `pretty/INDEX.md` list every module with size, line counts (original -> pretty) and a short guess of what it is (`//#region` paths, `node_modules` package path, source path, imported specifiers, URLs, named classes/functions). The stage notes give the re-indented/fallback counts.
 - Rust build provenance from panic/debug strings: crates.io dependencies with versions, git dependencies, first-party workspace crates and their source files, CI checkout repo, rustc commit.
 
 ## Outputs
@@ -28,7 +29,7 @@ Embedded payloads (`lib/embedded.mjs`):
 - `Voyager.exe` is the Electron/Chromium host, so its imports and strings describe Chromium; Voyager's own logic is in the JavaScript (stage 03-js).
 - Capabilities come from import tables; APIs resolved at runtime (`GetProcAddress`, napi-rs modules) are invisible.
 - Strings are capped per category and file.
-- Bun graphs are parsed from the Bun 1.1-1.3 layout; extracted JS is as shipped (minified), and bytecode is not decompiled.
+- Bun graphs are parsed from the Bun 1.1-1.3 layout; extracted JS is as shipped (minified; `pretty/` only re-indents it, identifiers stay mangled, regex-vs-division after `)`/`}` is a heuristic), and bytecode is not decompiled.
 - Rust provenance lists what was compiled in (paths left in strings), not what runs; code without panic paths is invisible.
 
 Boundary: this stage does not import other stages or `cli/`.
