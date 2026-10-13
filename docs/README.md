@@ -1,10 +1,10 @@
 # Architecture
 
 ```
-VY.exe -> [01-installer] -> out/01-installer/ -> [02-asar] -> out/02-asar/ -> [03-js] -> out/03-js/ -> [04-native] -> out/04-native/
+VY.exe -> [01-installer] -> out/01-installer/ -> [02-asar] -> out/02-asar/ -> [03-js] -> out/03-js/ -> [04-native] -> out/04-native/ -> [05-report] -> out/05-report/
                  \_______________________ out/manifest.json (one entry per stage) _______________________/
 ```
-`04-native` analyses binaries from `out/01-installer/` and `out/02-asar/`, which it reads as sibling output folders (not via imports).
+`04-native` analyses binaries from `out/01-installer/` and `out/02-asar/`, which it reads as sibling output folders (not via imports). `05-report` reads the outputs of 01-04 the same way and writes the summary.
 
 ## Rules
 - Stages communicate only through output folders and manifest entries.
