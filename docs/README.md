@@ -1,9 +1,10 @@
 # Architecture
 
 ```
-VY.exe -> [01-installer] -> out/01-installer/ -> [02-asar] -> out/02-asar/ -> [03-js] -> out/03-js/
-                 \______________ out/manifest.json (one entry per stage) ______________/
+VY.exe -> [01-installer] -> out/01-installer/ -> [02-asar] -> out/02-asar/ -> [03-js] -> out/03-js/ -> [04-native] -> out/04-native/
+                 \_______________________ out/manifest.json (one entry per stage) _______________________/
 ```
+`04-native` analyses binaries from `out/01-installer/` and `out/02-asar/`, which it reads as sibling output folders (not via imports).
 
 ## Rules
 - Stages communicate only through output folders and manifest entries.
@@ -29,7 +30,8 @@ VY.exe -> [01-installer] -> out/01-installer/ -> [02-asar] -> out/02-asar/ -> [0
 Re-running a stage replaces its entry.
 
 ## Running
-- `npm start` or `node cli/vre.mjs run [--input VY.exe] [--out out]`: all stages in order.
+- `npm start` or `node cli/vre.mjs run [--input VY.exe] [--out out]`: all stages in order. `--input` falls back to env `VRE_INPUT`.
+- Stage 01 needs an external 7-Zip binary (`7z`/`7za`/`7zz` on PATH, or `VRE_7Z`). Everything else is pure Node.
 - `node cli/vre.mjs stage <name>`: one stage; it expects the previous stage's folder to exist if it needs it.
 
 ## Add a stage

@@ -54,7 +54,7 @@ export async function main(argv) {
     options: { input: { type: 'string' }, out: { type: 'string', default: 'out' } },
   });
   const [cmd, name] = positionals;
-  const opts = { input: values.input ?? null, out: values.out };
+  const opts = { input: values.input ?? process.env.VRE_INPUT ?? null, out: values.out };
   if (cmd === 'run' && !name) await runAll(opts);
   else if (cmd === 'stage' && name) await runStage(name, opts);
   else {

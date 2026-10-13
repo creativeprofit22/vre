@@ -4,6 +4,7 @@
 - Commands: `npm start` (run all stages), `node cli/vre.mjs stage <name>` (one stage), `npm run lint`, `npm test`.
 - Boundary rule: stages (`stages/*`) never import other stages or `cli/`; they talk only via `out/` folders and `out/manifest.json`. Only `cli/registry.mjs` knows stage order. Lint enforces this.
 - Stages not yet implemented must report `status: "stub"`, never fake success.
+- Real input: `--input <VY.exe>` or env `VRE_INPUT`; stage 01 needs 7-Zip (`7z`/`7za`/`7zz` or `VRE_7Z`). Tests must not depend on VY.exe or 7-Zip (CI has neither).
 - CI lives in `.github/workflows/ci.yml` (runs lint + test) and must stay green; keep it in sync with the commands above.
 - Never commit with `--no-verify`.
 

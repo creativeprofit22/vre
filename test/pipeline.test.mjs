@@ -26,22 +26,25 @@ test('manifest roundtrip and replace-by-stage', async () => {
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('run all executes stages in order and records honest stubs', async () => {
+test('run all executes stages in order and records each entry', async () => {
   const dir = await tmp();
   try {
-    await runAll({ out: dir, log: quiet });
+    const seen = [];
+    const load = async (name) => ({ default: { name, run: async ({ inDir }) => { seen.push([name, inDir && inDir.split(/[\\/]/).pop()]); return { status: 'stub' }; } } });
+    await runAll({ out: dir, log: quiet, load });
     const m = JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8'));
     assert.deepEqual(m.entries.map((e) => e.stage), STAGES);
-    assert.ok(m.entries.every((e) => e.status === 'stub'));
+    assert.deepEqual(seen, STAGES.map((s, i) => [s, i ? STAGES[i - 1] : null]));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('a single stage runs alone', async () => {
+test('real stages fail honestly without input', async () => {
   const dir = await tmp();
   try {
-    await runStage('02-asar', { out: dir, log: quiet });
+    await assert.rejects(runAll({ out: dir, log: quiet }), /--input/);
+    await assert.rejects(runStage('02-asar', { out: dir, log: quiet }), /01-installer/);
     const m = await readManifest(dir);
-    assert.deepEqual(m.entries.map((e) => e.stage), ['02-asar']);
+    assert.deepEqual(m.entries.map((e) => [e.stage, e.status]), [['01-installer', 'failed'], ['02-asar', 'failed']]);
     await assert.rejects(runStage('nope', { out: dir, log: quiet }));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
