@@ -4,6 +4,84 @@
 const kb = (/** @type {number} */ n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1024).toFixed(1)} KB`);
 const esc = (/** @type {string} */ s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
+const short = (/** @type {string} */ f) => f.split('/').pop() ?? f;
+
+/**
+ * Report lines for the callable surface: HTTP routes, RPC tables, bridge members, sender checks, native addons.
+ * @param {ReturnType<typeof import('./map.mjs').finalizeMap>['surface']} s
+ */
+export function surfaceSection(s) {
+  const L = ['## Callable surface', ''];
+  const serve = s.routes.filter((r) => r.kind === 'serve');
+  const pages = s.routes.filter((r) => r.kind === 'page');
+  const calls = s.routes.filter((r) => r.kind === 'call');
+  L.push(`### HTTP endpoints served (${serve.length})`, '', 'Router registrations, MCP/HTTP layers and request-URL checks inside local HTTP handlers.', '');
+  if (serve.length) {
+    L.push('| method | path | found via | files |', '|---|---|---|---|');
+    for (const r of serve) L.push(`| ${r.method} | \`${esc(r.path)}\` | ${r.via.join(', ')} | ${r.files.map(short).join(', ')} |`);
+  } else L.push('None found.');
+  if (pages.length) L.push('', `Client-side page routes checked in browser chunks: ${pages.map((r) => `\`${esc(r.path)}\``).join(', ')}`);
+  L.push('', `### Outbound HTTP API calls (${calls.length})`, '', 'Request objects, generated API clients, socket requests and versioned paths appended to a base URL. Grouped by first path segment; the full list is in `map.json` (`surface.routes`).', '');
+  /** @type {Map<string, typeof calls>} */
+  const groups = new Map();
+  for (const r of calls) { const g = `/${r.path.split('/')[1] ?? ''}`; groups.set(g, [...(groups.get(g) ?? []), r]); }
+  if (groups.size) {
+    L.push('| prefix | calls | paths (method path) | files |', '|---|---|---|---|');
+    for (const [g, rs] of [...groups].sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1))) {
+      const shown = rs.slice(0, 12).map((r) => `${r.method} ${r.path}`).join(', ');
+      const files = [...new Set(rs.flatMap((r) => r.files.map(short)))].join(', ');
+      L.push(`| \`${esc(g)}\` | ${rs.length} | ${esc(shown)}${rs.length > 12 ? ', ...' : ''} | ${esc(files)} |`);
+    }
+  } else L.push('None found.');
+
+  L.push('', `### RPC method tables (${s.rpcTables.length})`, '', 'Constant tables of method names (`const *_METHODS = {...}`), with spreads of other tables expanded.', '');
+  if (s.rpcTables.length) {
+    L.push('| table | methods | includes | files |', '|---|---|---|---|');
+    for (const t of s.rpcTables) L.push(`| ${t.name} | ${t.methods.length} | ${t.includes.join(', ') || '-'} | ${t.files.map(short).join(', ')} |`);
+    for (const t of s.rpcTables) {
+      /** @type {Record<string, string[]>} */
+      const ns = {};
+      for (const m of t.methods) { const k = m.split(/[./]/)[0]; (ns[k] ??= []).push(m.slice(k.length + 1)); }
+      L.push('', `**${t.name}** by namespace:`, '');
+      for (const [k, v] of Object.entries(ns).sort()) L.push(`- \`${esc(k)}\` (${v.length}): ${v.map(esc).join(', ')}`);
+    }
+  } else L.push('None found.');
+  const rpc = Object.keys(s.jsonRpc);
+  L.push('', `### JSON-RPC methods (${rpc.length})`, '', '`method: "a/b"` literals (agent/app-server and MCP protocol messages).', '');
+  /** @type {Record<string, number>} */
+  const roots = {};
+  for (const m of rpc) roots[m.split('/')[0]] = (roots[m.split('/')[0]] ?? 0) + 1;
+  L.push(Object.entries(roots).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([k, n]) => `\`${esc(k)}/*\` ${n}`).join(', ') || 'None found.');
+
+  L.push('', '### contextBridge APIs', '');
+  for (const b of s.bridges) {
+    const linked = b.members.filter((m) => m.channels.length).length;
+    L.push(`**window.${esc(b.api)}** (${short(b.file)}): ${b.members.length} member(s), ${linked} mapped to IPC channels.`, '');
+    if (b.members.length) {
+      L.push('| member | IPC channel(s) |', '|---|---|');
+      for (const m of b.members) L.push(`| \`${esc(m.path)}\` | ${m.channels.map((c) => `\`${esc(c)}\``).join(', ') || '-'} |`);
+      L.push('');
+    } else L.push('Members not resolvable statically (value is not an object literal).', '');
+  }
+  if (!s.bridges.length) L.push('None found.', '');
+
+  L.push('### IPC sender checks', '', 'Places where the main process checks who sent a message (observations only; they do not prove complete coverage).', '');
+  if (s.senderChecks.length) {
+    L.push('| file | kind | check | count |', '|---|---|---|---|');
+    for (const c of s.senderChecks) L.push(`| ${short(c.file)} | ${c.kind} | \`${esc(c.name)}\` | ${c.count} |`);
+  } else L.push('None found.');
+
+  const na = s.nativeAddons;
+  L.push('', `### Native addons (${na.files.length} .node file(s))`, '', 'Shipped `.node` binaries, the package that loads them, and the first-party bundles importing that package. Analysed as binaries in stage 04-native.', '');
+  if (na.files.length) {
+    L.push('| archive | file | package | loader | imported by |', '|---|---|---|---|---|');
+    for (const a of na.files) L.push(`| ${a.archive} | ${esc(a.path)} | ${esc(a.package ?? '?')} | ${esc(a.loader ?? '?')} | ${a.importedBy.map(short).join(', ') || 'no direct first-party import (loaded by another package)'} |`);
+  } else L.push('None found.');
+  if (na.loads.length) L.push('', `Direct loads in first-party code: ${na.loads.map((l) => `${short(l.file)} (${[...l.requires, ...(l.dlopen ? [`process.dlopen x${l.dlopen}`] : [])].join(', ')})`).join('; ')}`);
+  L.push('');
+  return L;
+}
+
 /**
  * @param {{ files: any[], archives: Record<string, {files:number, bytes:number, jsFiles:number, thirdPartyFiles:number, thirdPartyBytes:number}>,
  *   recovered: number, beautified: number, embedded: {file:string, from:string, kind:string, bytes:number}[], transforms: {beautify:boolean, deobfuscate:boolean} }} sum
@@ -64,6 +142,8 @@ export function buildReport(sum, map, limits) {
     for (const [k, n] of g) L.push(`- ${esc(k)}${n > 1 ? ` x${n}` : ''}`);
   }
   L.push('');
+
+  if (map.surface) L.push(...surfaceSection(map.surface));
 
   const hosts = Object.entries(map.network.hosts).sort((a, b) => b[1].length - a[1].length || (a[0] < b[0] ? -1 : 1));
   L.push('## Network endpoints', '', `${map.network.urlCount} unique URLs across ${hosts.length} hosts (first-party code only). Top hosts:`, '', '| host | urls | example |', '|---|---|---|');

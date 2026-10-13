@@ -3,6 +3,7 @@
 // Electron surface, network, env, debug ids). Regex-based best effort.
 
 import { normalizeRegionPath } from './regions.mjs';
+import { addonBasePackage, addonLoads, bridgeMembers, scanRoutes, scanRpc, senderChecks } from './surface.mjs';
 
 /**
  * name@version from a region path inside node_modules (pnpm layout preferred).
@@ -199,7 +200,10 @@ export function scanFile(code, raw = code) {
   for (const m of code.matchAll(/\bprocess\.env\.([A-Za-z_]\w*)|\bprocess\.env\[\s*["']([^"']+)["']\s*\]/g)) env.add(m[1] ?? m[2]);
   const debugIds = [...raw.matchAll(/\/\/# debugId=([0-9a-fA-F-]{8,})/g)].map((m) => m[1]);
   const sourceMaps = [...raw.matchAll(/\/\/# sourceMappingURL=(\S+)/g)].map((m) => m[1]).filter((s) => !s.startsWith('data:'));
-  return { calls, schemes, flags, urls: [...urls].sort(), env: [...env].sort(), debugIds, sourceMaps };
+  return {
+    calls, schemes, flags, urls: [...urls].sort(), env: [...env].sort(), debugIds, sourceMaps,
+    routes: scanRoutes(code), rpc: scanRpc(code), bridges: bridgeMembers(code, consts), senders: senderChecks(code), addons: addonLoads(code),
+  };
 }
 
 /** Fresh accumulator for map.json. */
@@ -223,6 +227,22 @@ export function createMapAcc() {
     debugIds: [],
     /** @type {{ file: string, ref: string }[]} */
     sourceMaps: [],
+    /** @type {{ file: string, fileKind: string, kind: string, method: string, path: string, via: string }[]} */
+    routes: [],
+    /** @type {{ file: string, name: string, methods: string[], spreads: string[] }[]} */
+    rpcTables: [],
+    /** @type {Map<string, Set<string>>} */
+    jsonRpc: new Map(),
+    /** @type {{ file: string, api: string, members: { path: string, channels: string[] }[] }[]} */
+    bridges: [],
+    /** @type {{ file: string, kind: string, name: string, count: number }[]} */
+    senders: [],
+    /** @type {{ file: string, requires: string[], dlopen: number }[]} */
+    addonLoads: [],
+    /** @type {{ archive: string, path: string, package: string|null, bytes: number }[]} */
+    addonFiles: [],
+    /** @type {Map<string, string[]>} first-party file -> imports */
+    imports: new Map(),
   };
 }
 
@@ -264,8 +284,9 @@ export function addRegions(acc, file, regions) {
  * @param {ReturnType<typeof createMapAcc>} acc
  * @param {string} file
  * @param {ReturnType<typeof scanFile>} s
+ * @param {string} [fileKind] index kind of the file (browser-chunk routes are client-side pages)
  */
-export function addScan(acc, file, s) {
+export function addScan(acc, file, s, fileKind = 'other') {
   for (const c of s.calls) acc.calls.push({ file, ...c });
   for (const f of s.flags) acc.flags.push({ file, ...f });
   for (const scheme of s.schemes) acc.schemes.push({ file, scheme });
@@ -273,6 +294,12 @@ export function addScan(acc, file, s) {
   for (const e of s.env) { if (!acc.env.has(e)) acc.env.set(e, new Set()); acc.env.get(e)?.add(file); }
   for (const id of s.debugIds) acc.debugIds.push({ file, id });
   for (const ref of s.sourceMaps) acc.sourceMaps.push({ file, ref });
+  for (const r of s.routes ?? []) acc.routes.push({ file, fileKind, ...r });
+  for (const t of s.rpc?.tables ?? []) acc.rpcTables.push({ file, ...t });
+  for (const mth of s.rpc?.jsonRpc ?? []) { if (!acc.jsonRpc.has(mth)) acc.jsonRpc.set(mth, new Set()); acc.jsonRpc.get(mth)?.add(file); }
+  for (const b of s.bridges ?? []) acc.bridges.push({ file, ...b });
+  for (const c of s.senders ?? []) acc.senders.push({ file, ...c });
+  if (s.addons && (s.addons.requires.length || s.addons.dlopen)) acc.addonLoads.push({ file, ...s.addons });
 }
 
 /** @param {string} u */
@@ -305,9 +332,57 @@ export function finalizeMap(acc) {
   const hosts = {};
   for (const u of [...acc.urls.keys()].sort()) (hosts[hostOf(u)] ??= []).push({ url: u, files: [...(acc.urls.get(u) ?? [])].sort() });
   const sortedHosts = Object.fromEntries(Object.keys(hosts).sort().map((h) => [h, hosts[h]]));
+  const channelSet = new Set(Object.keys(channels));
+  // routes: dedupe by kind/method/path; browser-chunk "serve" checks are client-side page routes
+  /** @type {Map<string, {kind: string, method: string, path: string, via: Set<string>, files: Set<string>}>} */
+  const routeMap = new Map();
+  for (const r of acc.routes) {
+    const kind = r.fileKind === 'browser-chunk' && r.kind === 'serve' ? 'page' : r.kind;
+    const k = `${kind} ${r.method} ${r.path}`;
+    const e = routeMap.get(k) ?? { kind, method: r.method, path: r.path, via: new Set(), files: new Set() };
+    e.via.add(r.via); e.files.add(r.file); routeMap.set(k, e);
+  }
+  const routes = [...routeMap.values()].map((e) => ({ kind: e.kind, method: e.method, path: e.path, via: [...e.via].sort(), files: [...e.files].sort() }))
+    .sort((a, b) => byName(a.kind, b.kind) || byName(a.path, b.path) || byName(a.method, b.method));
+  // RPC tables: merge identical definitions across files, then expand spreads by table name
+  /** @type {Map<string, {name: string, own: string[], spreads: string[], files: Set<string>}>} */
+  const tables = new Map();
+  for (const t of acc.rpcTables) {
+    const e = tables.get(t.name) ?? { name: t.name, own: [], spreads: [], files: new Set() };
+    for (const m of t.methods) if (!e.own.includes(m)) e.own.push(m);
+    for (const sp of t.spreads) if (!e.spreads.includes(sp)) e.spreads.push(sp);
+    e.files.add(t.file); tables.set(t.name, e);
+  }
+  const expand = (/** @type {string} */ name, /** @type {Set<string>} */ seen = new Set()) => {
+    const t = tables.get(name);
+    if (!t || seen.has(name)) return [];
+    seen.add(name);
+    return [...new Set([...t.spreads.flatMap((sp) => expand(sp, seen)), ...t.own])];
+  };
+  const rpcTables = [...tables.values()].map((t) => ({ name: t.name, methods: expand(t.name).sort(), includes: t.spreads.sort(), files: [...t.files].sort() }))
+    .sort((a, b) => b.methods.length - a.methods.length || byName(a.name, b.name));
+  const jsonRpc = Object.fromEntries([...acc.jsonRpc.keys()].sort().map((k) => [k, [...(acc.jsonRpc.get(k) ?? [])].sort()]));
+  // bridges: keep only resolved names that are known IPC channels
+  const bridges = acc.bridges.map((b) => ({ api: b.api, file: b.file, members: b.members.map((m) => ({ path: m.path, channels: m.channels.filter((c) => channelSet.has(c)) })) }))
+    .sort((a, b) => byName(a.api, b.api) || byName(a.file, b.file));
+  // native addons: shipped .node files, the package that loads them, and first-party files importing that package
+  const addons = acc.addonFiles.map((a) => {
+    const base = a.package ? addonBasePackage(a.package) : null;
+    const short = base?.includes('/') ? base.split('/').pop() : base;
+    const users = base ? [...acc.imports].filter(([, imps]) => imps.some((i) => i === base || i.startsWith(`${base}/`) || i === short || (a.package && i === a.package))).map(([f]) => f).sort() : [];
+    return { archive: a.archive, path: a.path, package: a.package, loader: base, bytes: a.bytes, importedBy: users };
+  }).sort((a, b) => byName(a.archive, b.archive) || byName(a.path, b.path));
   return {
     packages,
     firstParty,
+    surface: {
+      routes,
+      rpcTables,
+      jsonRpc,
+      bridges,
+      senderChecks: sortBy(acc.senders, ['file', 'kind', 'name']),
+      nativeAddons: { files: addons, loads: sortBy(acc.addonLoads, ['file']) },
+    },
     electron: {
       ipcChannels: Object.fromEntries(Object.keys(channels).sort().map((k) => [k, [...channels[k]].sort()])),
       dynamicIpc,

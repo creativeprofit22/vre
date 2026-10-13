@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { addPackage, addRegions, addScan, createMapAcc, finalizeMap, scanFile } from './lib/map.mjs';
+import { addPackage, addRegions, addScan, createMapAcc, finalizeMap, packageFromPath, scanFile } from './lib/map.mjs';
 import { classify, extractImports, isJsFile, isMinified, isThirdParty, normalizeRegionPath, splitRegions, stripComments } from './lib/regions.mjs';
 import { buildReport } from './lib/report.mjs';
 
@@ -10,7 +10,8 @@ const BASE_LIMITS = [
   'Recovered region files keep the original extension (.ts, .tsx, ...) but contain the compiled JS that rolldown emitted, not the original source; types and comments stripped by the build are gone.',
   'Source maps are referenced but not shipped, so exact original source cannot be reconstructed.',
   'Imports, IPC channels, URLs, env vars and webPreferences are regex/scan-based best effort: channel/scheme names are traced through string constants, namespaced createKey() helpers, `{ channel: CONST }` registrations and tiny return-a-constant functions; anything computed beyond that is listed as a runtime call site, not guessed.',
-  'node_modules/ inside the archives is third-party: counted and package.json-read only, not indexed, recovered or beautified.',
+  'Callable surface (HTTP routes, RPC method tables, contextBridge members, sender checks, native addons) is scanned with regexes and brace matching on compiled JS: routes built entirely at runtime, RPCs not declared in a `*_METHODS` table or a `method: "a/b"` literal, and bridge objects that are not object literals are missed; outbound calls include bundled third-party clients (e.g. a generated SDK) and say nothing about which calls run.',
+  'node_modules/ inside the archives is third-party: counted and package.json-read only, not indexed, recovered or beautified (their `.node` binaries are listed under native addons).',
   'Deobfuscation is best-effort and never proves original source.',
 ];
 const EXT = { wasm: 'wasm', png: 'png', gzip: 'gz', zip: 'zip', pdf: 'pdf', unknown: 'bin' };
@@ -76,6 +77,7 @@ export default {
         const abs = join(root, rel);
         const size = (await stat(abs)).size;
         st.files++; st.bytes += size;
+        if (rel.endsWith('.node')) acc.addonFiles.push({ archive, path: rel, package: packageFromPath(rel)?.name ?? null, bytes: size });
         if (isThirdParty(rel)) {
           st.thirdPartyFiles++; st.thirdPartyBytes += size;
           const pdir = /^(.*node_modules\/(?:@[^/]+\/[^/]+|[^@./][^/]*))\//.exec(rel)?.[1];
@@ -111,7 +113,8 @@ export default {
           if (unregioned.trim()) await put(join(outDir, 'recovered', archive, rel, '_unregioned.js'), unregioned);
           addRegions(acc, id, regions.map((r) => ({ path: r.path, bytes: Buffer.byteLength(r.code) })));
         }
-        addScan(acc, id, scanFile(code, src));
+        acc.imports.set(id, entry.imports);
+        addScan(acc, id, scanFile(code, src), entry.kind);
         let deob = src;
         if (dt) {
           try {
@@ -160,6 +163,7 @@ export default {
         `${files.length} first-party JS files indexed across ${archives.length} archive(s) in ${secs}s`,
         `${recovered} region modules written to recovered/, ${beautified} minified files to beautified/, ${embedded.length} embedded blob(s)`,
         `${map.packages.length} packages, ${Object.keys(map.electron.ipcChannels).length} IPC channels, ${map.network.urlCount} URLs`,
+        `surface: ${map.surface.routes.length} HTTP routes, ${map.surface.rpcTables.reduce((n, t) => n + t.methods.length, 0)} RPC methods in ${map.surface.rpcTables.length} table(s), ${Object.keys(map.surface.jsonRpc).length} JSON-RPC methods, ${map.surface.bridges.reduce((n, b) => n + b.members.length, 0)} bridge members, ${map.surface.senderChecks.reduce((n, c) => n + c.count, 0)} sender checks, ${map.surface.nativeAddons.files.length} native addon file(s)`,
       ],
       limits,
     };
