@@ -66,6 +66,7 @@ function buildPE() {
   sec(0, '.text', 0x1000, 0x200, 0x800, 0x60000020);
   sec(1, '.rdata', 0x2000, 0xa00, 0x600, 0x40000040);
   randomBytes(0x800).copy(buf, 0x200);
+  buf.fill(0, 0x2f0, 0x480); // keep random bytes from gluing onto the test strings
   buf.write('https://api.example.com/v1/telemetry\0', 0x300, 'latin1');
   w('\\\\.\\pipe\\voyager-ipc').copy(buf, 0x340);
   buf.write('/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core\0', 0x400, 'latin1');
